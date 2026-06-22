@@ -1,13 +1,13 @@
-import axios from 'axios'
+import apiClient from './client'
 
-const NEWS_API_URL = 'http://localhost:8000/api/news'
+const NEWS_API_URL = '/api/news'
 
 export function analyzeNews(data) {
-  return axios.post(`${NEWS_API_URL}/analyze`, data)
+  return apiClient.post(`${NEWS_API_URL}/analyze`, data)
 }
 
 export function uploadNewsFile(file) {
   const formData = new FormData()
   formData.append('file', file)
-  return axios.post(`${NEWS_API_URL}/upload`, formData)
+  return apiClient.post(`${NEWS_API_URL}/upload`, formData)
 }

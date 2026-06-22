@@ -1,13 +1,23 @@
+"""历史记录 HTTP 接口。"""
+
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.models.database_models import NewsRecord
-from app.models.schemas import DeleteHistoryResponse, HistoryDetailResponse, HistoryListResponse
+from app.models.history_schemas import (
+    DeleteHistoryResponse,
+    HistoryDetailResponse,
+    HistoryListResponse,
+)
+from app.services.history_service import (
+    HistoryNotFoundError,
+    HistoryPersistenceError,
+    delete_history_record,
+    get_history_detail,
+    get_history_list,
+)
 
 
 router = APIRouter(prefix="/api/history", tags=["历史记录"])
@@ -19,43 +29,9 @@ def get_history(
     page_size: int = Query(10, ge=1, le=100, description="每页记录数"),
     keyword: Optional[str] = Query(None, description="原文或清洗文本的搜索关键词"),
     db: Session = Depends(get_db),
-) -> dict:
-    """按创建时间倒序分页返回新闻记录列表。"""
-    query = db.query(NewsRecord)
-    search_keyword = keyword.strip() if keyword else ""
-    if search_keyword:
-        search_pattern = f"%{search_keyword}%"
-        query = query.filter(
-            or_(
-                NewsRecord.original_text.like(search_pattern),
-                NewsRecord.cleaned_text.like(search_pattern),
-            )
-        )
-
-    total = query.count()
-    records = (
-        query.order_by(NewsRecord.created_at.desc(), NewsRecord.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-
-    return {
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "items": [
-            {
-                "id": record.id,
-                "title": "暂未生成标题",
-                "word_count": record.word_count,
-                "sentence_count": record.sentence_count,
-                "paragraph_count": record.paragraph_count,
-                "created_at": record.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-            }
-            for record in records
-        ],
-    }
+) -> HistoryListResponse:
+    """接收分页参数并返回历史记录列表。"""
+    return get_history_list(db, page, page_size, keyword)
 
 
 @router.get("/ping")
@@ -64,35 +40,26 @@ def ping() -> dict[str, str]:
 
 
 @router.get("/{news_id}", response_model=HistoryDetailResponse)
-def get_history_detail(news_id: int, db: Session = Depends(get_db)) -> dict:
-    """返回指定新闻记录的原文、清洗文本和基础统计信息。"""
-    record = db.get(NewsRecord, news_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="新闻记录不存在。")
-
-    return {
-        "id": record.id,
-        "original_text": record.original_text,
-        "cleaned_text": record.cleaned_text or "",
-        "word_count": record.word_count,
-        "sentence_count": record.sentence_count,
-        "paragraph_count": record.paragraph_count,
-        "created_at": record.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-    }
+def get_history_detail_by_id(
+    news_id: int,
+    db: Session = Depends(get_db),
+) -> HistoryDetailResponse:
+    """接收新闻 ID 并返回详情。"""
+    try:
+        return get_history_detail(db, news_id)
+    except HistoryNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @router.delete("/{news_id}", response_model=DeleteHistoryResponse)
-def delete_history(news_id: int, db: Session = Depends(get_db)) -> dict:
-    """删除指定新闻记录；当前阶段不查询或处理业务结果详情。"""
-    record = db.get(NewsRecord, news_id)
-    if record is None:
-        raise HTTPException(status_code=404, detail="新闻记录不存在。")
-
+def delete_history(
+    news_id: int,
+    db: Session = Depends(get_db),
+) -> DeleteHistoryResponse:
+    """删除指定新闻记录。"""
     try:
-        db.delete(record)
-        db.commit()
-    except SQLAlchemyError as error:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="新闻记录删除失败，请稍后重试。") from error
-
-    return {"message": "删除成功", "news_id": news_id}
+        return delete_history_record(db, news_id)
+    except HistoryNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except HistoryPersistenceError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error

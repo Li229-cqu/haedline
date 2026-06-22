@@ -1,5 +1,5 @@
-import axios from 'axios'
+import apiClient from './client'
 
 export function getStatistics() {
-  return axios.get('http://localhost:8000/api/statistics')
+  return apiClient.get('/api/statistics')
 }

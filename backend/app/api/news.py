@@ -1,22 +1,16 @@
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.models.database_models import NewsRecord
-from app.models.schemas import (
-    Entities,
-    FileUploadResponse,
-    NewsAnalyzeRequest,
-    NewsAnalyzeResponse,
-    QualityCheckResult,
-    Summaries,
-    TextInfo,
-)
-from app.services.preprocess_service import preprocess_text
 from app.services.file_service import ALLOWED_FILE_EXTENSIONS, extract_text_from_file, save_upload_file
+from app.models.news_schemas import FileUploadResponse, NewsAnalyzeRequest, NewsAnalyzeResponse
+from app.services.news_service import (
+    NewsPersistenceError,
+    NewsValidationError,
+    analyze_and_save_news,
+)
 
 
 router = APIRouter(prefix="/api/news", tags=["新闻处理"])
@@ -76,54 +70,10 @@ def analyze_news(
     request: NewsAnalyzeRequest,
     db: Session = Depends(get_db),
 ) -> NewsAnalyzeResponse:
-    """清洗并保存单篇新闻，返回保持稳定的基础分析结构。"""
-    if not request.text or not request.text.strip():
-        raise HTTPException(status_code=400, detail="新闻正文不能为空。")
-
-    preprocess_result = preprocess_text(request.text)
-    cleaned_text = preprocess_result["cleaned_text"]
-    if not cleaned_text:
-        raise HTTPException(status_code=400, detail="新闻正文不能为空。")
-    if len(cleaned_text) < 20:
-        raise HTTPException(status_code=400, detail="新闻正文过短，无法分析")
-
-    news_record = NewsRecord(
-        original_text=preprocess_result["original_text"],
-        cleaned_text=cleaned_text,
-        word_count=preprocess_result["word_count"],
-        sentence_count=preprocess_result["sentence_count"],
-        paragraph_count=preprocess_result["paragraph_count"],
-    )
-
+    """接收 HTTP 请求并委托新闻业务服务完成分析与入库。"""
     try:
-        db.add(news_record)
-        db.commit()
-        db.refresh(news_record)
-    except SQLAlchemyError as error:
-        db.rollback()
-        raise HTTPException(status_code=500, detail="新闻记录保存失败，请稍后重试。") from error
-
-    return NewsAnalyzeResponse(
-        news_id=news_record.id,
-        text_info=TextInfo(
-            word_count=preprocess_result["word_count"],
-            sentence_count=preprocess_result["sentence_count"],
-            paragraph_count=preprocess_result["paragraph_count"],
-        ),
-        keywords=[],
-        entities=Entities(),
-        summaries=Summaries(
-            short="摘要生成模块将在后续阶段实现",
-            long="长摘要生成模块将在后续阶段实现",
-        ),
-        titles=["标题生成模块将在后续阶段实现"],
-        quality_check=QualityCheckResult(
-            keyword_coverage=0,
-            entity_coverage=0,
-            summary_similarity=0,
-            title_similarity=0,
-            clickbait_risk="not_checked",
-            factual_shift_risk="not_checked",
-            suggestions=["一致性质量校验将在后续阶段实现"],
-        ),
-    )
+        return analyze_and_save_news(request.text, db)
+    except NewsValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except NewsPersistenceError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
